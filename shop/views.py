@@ -12,13 +12,14 @@ from rest_framework import viewsets, permissions, mixins, status, serializers
 from rest_framework.response import Response
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.decorators import action
-from rest_framework.parsers import MultiPartParser
+from rest_framework.parsers import MultiPartParser, FormParser
 
 from .models import GoodCategory, Good, PaymentMethod, DeliveryMethod, Recipient, Checkout, Transaction, BasketItem, \
     CheckoutItem, GoodImage
 from .serializers import GoodCategorySerializer, GoodSerializer, PaymentMethodSerializer, DeliveryMethodSerializer, \
-    RecipientSerializer, BasketItemSerializer, CheckoutSerializer, TransactionSerializer
-from .permission import IsSellerOrAdmin, IsSellerAndOwnerOrReadOnly, IsAdminOnly, IsSellerOnly
+    RecipientSerializer, BasketItemSerializer, CheckoutSerializer, TransactionSerializer, GoodImageSerializer
+from .permission import IsSellerOrAdmin, IsSellerAndOwnerOrReadOnly, IsAdminOnly, IsSellerOnly, \
+    ReadOnlyOrSellerPermission
 
 
 Configuration.account_id = settings.YOOKASSA_SHOP_ID
@@ -127,26 +128,36 @@ class PublicGoodViewSet(viewsets.ReadOnlyModelViewSet):
     pagination_class = CustomPagination
 
 
-class GoodViewSet(viewsets.ModelViewSet):
-    serializer_class = GoodSerializer
+class GoodImageViewSet(viewsets.ModelViewSet):
+    queryset = GoodImage.objects.all()
+    serializer_class = GoodImageSerializer
     permission_classes = [IsSellerOnly, IsSellerAndOwnerOrReadOnly]
-    pagination_class = CustomPagination
 
     def get_queryset(self):
         user = self.request.user
-        print(self.request.user, self.request.user.is_staff)
+        if user.is_staff:
+            return GoodImage.objects.all()
+        return GoodImage.objects.filter(good__seller=user)
+
+
+class GoodViewSet(viewsets.ModelViewSet):
+    serializer_class = GoodSerializer
+    permission_classes = [ReadOnlyOrSellerPermission, IsSellerAndOwnerOrReadOnly]
+    pagination_class = CustomPagination
+    parser_classes = [MultiPartParser, FormParser]
+
+    def get_queryset(self):
+        user = self.request.user
+        if not user.is_authenticated or user.is_anonymous:
+            return Good.objects.all()
         if user.is_staff:
             return Good.objects.all()
-        return Good.objects.filter(seller=user)
+        if user.role == 'seller':
+            return Good.objects.filter(seller=user)
+        return Good.objects.all()
 
     def perform_create(self, serializer):
         serializer.save(seller=self.request.user)
-
-    def get_object(self):
-        obj = super().get_object()
-        if not self.request.user.is_staff and obj.seller != self.request.user:
-            raise PermissionDenied("Вы не можете получить доступ к чужому товару.")
-        return obj
 
     @action(detail=True, methods=['post'], parser_classes=[MultiPartParser])
     def upload_image(self, request, pk=None):
@@ -198,8 +209,8 @@ class RecipientViewSet(viewsets.ModelViewSet):
     pagination_class = CustomPagination
 
     def get_permissions(self):
-        if self.action in ['list', 'retrieve', 'update', 'partial_update', 'destroy']:
-            return [IsOwnerOrAdmin()]
+        if self.action in ['create', 'update', 'partial_update', 'destroy']:
+            return [permissions.IsAuthenticated(), IsOwnerOrAdmin()]
         return [permissions.IsAuthenticated()]
 
     def get_queryset(self):
@@ -301,3 +312,35 @@ class TransactionViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         return Transaction.objects.filter(checkout__user=self.request.user)
+
+    def perform_create(self, serializer):
+        validated_data = serializer.validated_data
+        checkout = validated_data['checkout']
+        amount = validated_data['amount']
+
+        payment = Payment.create({
+            "amount": {
+                "value": str(amount),
+                "currency": "RUB"
+            },
+            "confirmation": {
+                "type": "redirect",
+                "return_url": "http://localhost:5173/basket"
+            },
+            "capture": True,
+            "description": f"Заказ №{checkout.id}",
+            "metadata": {
+                "checkout_id": checkout.id,
+            }
+        }, uuid.uuid4().hex)
+
+        # Создаем и сохраняем вручную
+        transaction = Transaction.objects.create(
+            checkout=checkout,
+            amount=amount,
+            status='created',
+            provider_data=payment.json()
+        )
+
+        # ВАЖНО: записываем объект обратно в сериализатор
+        serializer.instance = transaction

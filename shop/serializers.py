@@ -1,6 +1,7 @@
 from rest_framework import serializers
 from .models import GoodCategory, Good, GoodImage, PaymentMethod, DeliveryMethod, Recipient, BasketItem, Checkout, \
     CheckoutItem, Transaction
+import json
 
 
 class GoodCategorySerializer(serializers.ModelSerializer):
@@ -27,13 +28,23 @@ class GoodSerializer(serializers.ModelSerializer):
         source='seller', read_only=True
     )
     images = GoodImageSerializer(many=True, read_only=True)
+    uploaded_images = serializers.ListField(
+        child=serializers.ImageField(), write_only=True, required=False
+    )
 
     class Meta:
         model = Good
         fields = [
             'id', 'name', 'description', 'price',
-            'categoryId', 'sellerId', 'images'
+            'categoryId', 'sellerId', 'images', 'uploaded_images'
         ]
+
+    def create(self, validated_data):
+        uploaded_images = validated_data.pop('uploaded_images', [])
+        good = Good.objects.create(**validated_data)
+        for image in uploaded_images:
+            GoodImage.objects.create(good=good, image=image)
+        return good
 
 
 class PaymentMethodSerializer(serializers.ModelSerializer):
@@ -96,7 +107,7 @@ class CheckoutSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'user', 'recipientId',
             'paymentMethodId', 'deliveryMethodId',
-            'payment_total', 'created', 'items'
+            'payment_total', 'created', 'items', 'status'
         ]
         read_only_fields = ['user', 'created', 'is_paid', 'status']
 
@@ -110,3 +121,12 @@ class TransactionSerializer(serializers.ModelSerializer):
             'id', 'created', 'updated', 'status', 'amount',
             'checkoutId', 'provider_data'
         ]
+
+    def get_payment_url(self, obj):
+        if not obj.provider_data:
+            return None
+        try:
+            data = json.loads(obj.provider_data) if isinstance(obj.provider_data, str) else obj.provider_data
+            return data.get('confirmation', {}).get('confirmation_url')
+        except Exception:
+            return None

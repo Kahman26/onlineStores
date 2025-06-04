@@ -2,10 +2,11 @@ from django.urls import path, include
 from rest_framework.routers import DefaultRouter
 from .views import GoodCategoryViewSet, GoodViewSet, PublicGoodViewSet, PaymentMethodViewSet, DeliveryMethodViewSet, \
     RecipientViewSet, BasketItemViewSet, CheckoutViewSet, TransactionViewSet, initiate_yookassa_payment, \
-    yookassa_webhook
+    yookassa_webhook, GoodImageViewSet
 
 router = DefaultRouter()
 router.register(r'good-categories', GoodCategoryViewSet, basename='good-category')
+router.register(r'good-images', GoodImageViewSet, basename='good-image')
 router.register(r'goods', GoodViewSet, basename='good')
 router.register(r'catalog', PublicGoodViewSet, basename='catalog')
 router.register(r'payment-methods', PaymentMethodViewSet, basename='payment-method')
